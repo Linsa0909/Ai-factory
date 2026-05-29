@@ -122,7 +122,7 @@ def test_invalidation_on_already_stale_ignores_children():
     assert stale == []
 
 
-def test_invalidation_on_passed_task_ignored():
+def test_invalidation_stales_immediate_dependents():
     """Invalidating a PASSED task whose deps are still PASSED does nothing.
     Actually — invalidate marks dependents of the given task. If task A is still
     PASSED, invalidating A marks tasks that depend on A. This is intentional."""
@@ -155,3 +155,13 @@ def test_graph_with_multiple_roots():
     assert g.ready_tasks() == []  # A and B are PENDING, not PASSED
     assert g.get("A").status == TaskStatus.PENDING
     assert g.get("B").status == TaskStatus.PENDING
+
+
+def test_invalidation_skips_running_task():
+    """⚠️ Invalidating upstream of a RUNNING task must NOT crash — just skip it."""
+    g = TaskGraph()
+    g.add(Task(id="A", type="requirement", status=TaskStatus.PASSED))
+    g.add(Task(id="B", type="design", depends_on=["A"], status=TaskStatus.RUNNING))
+    # B is RUNNING → cannot go STALE. Must not crash.
+    stale = g.invalidate_downstream("A")
+    assert stale == []  # B was skipped, not added to stale list

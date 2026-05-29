@@ -1,7 +1,7 @@
 """TaskGraph: DAG of tasks. Owns add/query/invalidate. Scheduler delegates to this."""
 
 from ai_runtime.task import Task, TaskStatus
-from ai_runtime.fsm import transition
+from ai_runtime.fsm import transition, can_transition
 
 
 class CyclicDependencyError(Exception):
@@ -88,14 +88,21 @@ class TaskGraph:
         return ready
 
     def invalidate_downstream(self, upstream_id: str) -> list[Task]:
-        """Mark all tasks that depend on upstream_id as STALE. Does NOT cascade further."""
+        """Mark all tasks that depend on upstream_id as STALE. Does NOT cascade further.
+
+        Only tasks that allow a → STALE transition (PASSED, BLOCKED) are affected.
+        Tasks in RUNNING, FAILED, or other states that don't permit STALE are silently skipped.
+        """
         stale: list[Task] = []
         for task in self._tasks.values():
-            if upstream_id in task.depends_on and task.status not in (
-                TaskStatus.STALE, TaskStatus.CANCELLED
-            ):
-                transition(task, TaskStatus.STALE)
-                stale.append(task)
+            if upstream_id not in task.depends_on:
+                continue
+            if task.status in (TaskStatus.STALE, TaskStatus.CANCELLED):
+                continue
+            if not can_transition(task, TaskStatus.STALE):
+                continue
+            transition(task, TaskStatus.STALE)
+            stale.append(task)
         return stale
 
     def all_passed(self) -> bool:
