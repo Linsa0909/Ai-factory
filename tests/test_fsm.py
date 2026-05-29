@@ -124,3 +124,25 @@ def test_invalid_transition_does_not_mutate():
     assert t.status == original_status
     assert t.status_history == original_history
     assert t.failure_reason == original_reason
+
+
+def test_failure_reason_cleared_on_recovery():
+    """⚠️ FAILED → ... → PASSED must clear stale failure_reason."""
+    t = Task(id="T1", type="verify", status=TaskStatus.RUNNING)
+    transition(t, TaskStatus.FAILED, reason="db timeout")
+    assert t.failure_reason == "db timeout"
+    transition(t, TaskStatus.WAITING_RETRY)
+    transition(t, TaskStatus.FIXING)
+    transition(t, TaskStatus.VERIFYING)
+    transition(t, TaskStatus.PASSED)
+    assert t.status == TaskStatus.PASSED
+    assert t.failure_reason == "", f"failure_reason should be cleared on PASSED, got: {t.failure_reason}"
+
+
+def test_unregistered_status_fails_loudly():
+    """⚠️ If a TaskStatus is missing from TRANSITIONS, fail with RuntimeError, not silent."""
+    from unittest.mock import MagicMock
+    t = MagicMock(spec=Task)
+    t.status = "not-a-real-status"
+    with pytest.raises(RuntimeError, match="no TRANSITIONS entry"):
+        can_transition(t, TaskStatus.PASSED)
