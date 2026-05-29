@@ -49,9 +49,10 @@ class Task:
             "id": self.id, "type": self.type, "module": self.module,
             "status": self.status.value, "depends_on": self.depends_on,
             "retry_count": self.retry_count, "max_retry": self.max_retry,
+            "timeout_seconds": self.timeout_seconds, "model": self.model,
             "status_history": self.status_history,
             "failure_reason": self.failure_reason,
-            "snapshot_before": self.snapshot_before,
+            "snapshot_before": self.snapshot_before, "snapshot_after": self.snapshot_after,
             "outputs": self.outputs,
         }
 
@@ -63,8 +64,11 @@ class Task:
             depends_on=d.get("depends_on", []),
             retry_count=d.get("retry_count", 0),
             max_retry=d.get("max_retry", 3),
+            timeout_seconds=d.get("timeout_seconds", 1800),
+            model=d.get("model", ""),
             status_history=d.get("status_history", []),
             failure_reason=d.get("failure_reason", ""),
             snapshot_before=d.get("snapshot_before", ""),
+            snapshot_after=d.get("snapshot_after", ""),
             outputs=d.get("outputs", []),
         )
