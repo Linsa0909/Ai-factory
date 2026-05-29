@@ -25,7 +25,7 @@ TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.HUMAN_REQUIRED: {TaskStatus.READY, TaskStatus.CANCELLED, TaskStatus.BLOCKED},
     TaskStatus.BLOCKED:        {TaskStatus.CANCELLED, TaskStatus.STALE},
     TaskStatus.STALE:          {TaskStatus.CANCELLED, TaskStatus.PENDING},
-    TaskStatus.PASSED:         set(),
+    TaskStatus.PASSED:         {TaskStatus.STALE},
     TaskStatus.CANCELLED:      set(),
 }
 

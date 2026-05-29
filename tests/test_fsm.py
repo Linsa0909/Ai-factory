@@ -44,9 +44,11 @@ def test_stale_can_go_back_to_pending():
 # === DESTRUCTIVE TESTS (critical for state consistency) ===
 
 def test_cannot_transition_from_terminal_passed():
-    """PASSED is terminal. No exit transitions allowed."""
+    """PASSED has only one exit transition: -> STALE (cache invalidation)."""
     t = Task(id="T1", type="codegen", status=TaskStatus.PASSED)
     for bad_status in TaskStatus:
+        if bad_status == TaskStatus.STALE:
+            continue  # STALE is the sole valid exit (DAG invalidation)
         assert not can_transition(t, bad_status), f"PASSED -> {bad_status.value} must be rejected"
 
 
