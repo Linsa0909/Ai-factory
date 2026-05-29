@@ -11,6 +11,8 @@ class SnapshotManager:
 
     def __init__(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace)
+        # Verify workspace is a git repository
+        self._git("rev-parse", "--git-dir")
         self.snapshots_dir = self.workspace / ".ai-factory" / "artifacts" / "snapshots"
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -26,7 +28,8 @@ class SnapshotManager:
     def create(self, task_id: str, reason: str, task_states: dict[str, str]) -> str:
         """Create a git commit checkpoint and return the snapshot ID."""
         snap_id = f"snap-{task_id}-{datetime.now(timezone.utc).strftime('%H%M%S')}"
-        self._git("add", "-A")
+        self._git("add", "-u")
+        self._git("add", ".ai-factory/")
         self._git("commit", "-m", f"[AI SNAPSHOT] {snap_id} @ {task_id}: {reason}", "--allow-empty")
         commit = self._git("rev-parse", "HEAD")
         data = {
@@ -44,4 +47,5 @@ class SnapshotManager:
         if not snap_file.exists():
             raise FileNotFoundError(f"Snapshot {snapshot_id} not found")
         data = json.loads(snap_file.read_text())
-        self._git("checkout", data["git_commit"], "--", ".")
+        self._git("reset", "--hard", data["git_commit"])
+        self._git("clean", "-fd")

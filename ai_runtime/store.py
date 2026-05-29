@@ -1,5 +1,6 @@
 """JSON filesystem persistence. No database."""
 
+import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ class RuntimeStore:
         try:
             data = json.loads(self.graph_path.read_text())
             return [Task.from_dict(t) for t in data.get("tasks", [])]
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, ValueError):
             return []
 
     def save_graph(self, tasks: list[Task]) -> None:
@@ -35,7 +36,6 @@ class RuntimeStore:
 
     def save_telemetry(self, entry: dict[str, Any]) -> None:
         """Append one telemetry line to JSONL file."""
-        import datetime
         telemetry_dir = self.workspace / ".ai-factory" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
         date_str = datetime.date.today().isoformat()
