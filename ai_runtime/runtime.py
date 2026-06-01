@@ -14,6 +14,7 @@ from ai_runtime.executor import ExecutionRunner
 from ai_runtime.fix_loop import AutoFixLoop, FixLoopConvergence
 from ai_runtime.patch_engine import PatchEngine
 from ai_runtime.capability_analyzer import CapabilityAnalyzer, DevelopmentPlan
+from ai_runtime.component_registry import ComponentRegistry
 
 
 PROMPTS: dict[str, str] = {
@@ -26,7 +27,7 @@ PROMPTS: dict[str, str] = {
     # Frontend tasks
     "ui-design": "You are a senior UI designer. Based on the prototype and requirements, design the frontend component tree: # Component Hierarchy # Page Layout # State Management # API Integration Points. Output markdown.",
     "component-test": "You are a senior frontend test engineer. Generate frontend tests. Use Vitest + Testing Library. Test: rendering, user interaction, API mock, error states. Output TypeScript test code.",
-    "page-dev": "You are a senior React developer. Implement frontend pages based on the prototype. Use React + TypeScript + CSS. Every component must handle loading/empty/error states. Call real backend APIs. Output TypeScript/JSX code.",
+    "page-dev": "You are a senior React developer. Implement frontend pages based on the prototype. You MUST follow the DESIGN PROFILE and use the AVAILABLE COMPONENTS injected in the context — do NOT recreate Button, Card, Input, or any listed component. Only create NEW components for business-specific UI. Wrap every page in PageShell. Output TypeScript/JSX code.",
     "e2e-test": "You are a QA engineer. Generate Playwright E2E tests. Test: full user flow, API integration, error handling. Output TypeScript test code.",
 }
 
@@ -34,20 +35,24 @@ PROMPTS: dict[str, str] = {
 class AIRuntime:
     """Facade: wires components, exposes submit/status/run_once. No business logic."""
 
-    def __init__(self, workspace: str, deepseek_api_key: str = "") -> None:
+    def __init__(self, workspace: str, deepseek_api_key: str = "",
+                 profile: str = "", profiles_dir: str = "") -> None:
         self.workspace = Path(workspace)
         self.store = RuntimeStore(workspace)
         self.graph = TaskGraph()
         self.scheduler = Scheduler(self.graph)
         self.snapshots = SnapshotManager(workspace)
-        self.context_builder = ContextBuilder(workspace)
+        pd = profiles_dir or str(Path(__file__).parent.parent / "profiles")
+        self.context_builder = ContextBuilder(workspace, profiles_dir=pd)
         self.adapter = AgentAdapter(deepseek_api_key=deepseek_api_key)
         self.executor = ExecutionRunner(workspace)
         self.patcher = PatchEngine(workspace)
         self.fix_loop = AutoFixLoop(self.adapter, self.executor)
         self.event_bus = EventBus()
         self.analyzer = CapabilityAnalyzer()
+        self.registry = ComponentRegistry(pd)
         self._plan: DevelopmentPlan | None = None
+        self._profile = profile
 
         for task in self.store.load_graph():
             self.graph.add(task)
@@ -86,6 +91,11 @@ class AIRuntime:
     async def submit(self, feature: str, requirement_path: str = "", requirement_text: str = "") -> str:
         # Analyze requirement type
         plan = self.analyze(requirement_path, requirement_text)
+
+        # On FULLSTACK: deploy profile components to workspace
+        if plan.need_frontend and self._profile:
+            self.registry.deploy_to_project(self._profile, str(self.workspace))
+            self.registry.deploy_screenshots(self._profile, str(self.workspace))
 
         # Build DAG(s)
         backend_tasks = self._make_backend_tasks(feature) if plan.need_backend else []
@@ -136,6 +146,7 @@ class AIRuntime:
         context = self.context_builder.build(
             task_type=task.type, module=task.module,
             failures=[task.failure_reason] if task.failure_reason else None,
+            profile=self._profile,
         )
         prompt = PROMPTS.get(task.type, PROMPTS["dev"])
         return await self.adapter.run(task.type, prompt, context, str(self.workspace))

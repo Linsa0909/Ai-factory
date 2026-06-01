@@ -1,0 +1,33 @@
+{
+  "name": "linear-enterprise",
+  "version": "1.0.0",
+  "theme": "dark",
+  "font": "Geist",
+  "radius": "16px",
+
+  "colors": {
+    "background": "#000000",
+    "card": "rgba(24,24,27,0.5)",
+    "border": "#27272a",
+    "foreground": "#fafafa",
+    "muted": "#71717a",
+    "accent": "#6366f1"
+  },
+
+  "effects": {
+    "cardHover": "scale-[1.01]",
+    "glow": "indigo-500/10",
+    "microDots": "radial-gradient(#27272a_1px,transparent_1px)"
+  },
+
+  "rules": {
+    "allowLightTheme": false,
+    "allowBluePrimary": false,
+    "allowMaterialUI": false,
+    "allowAntd": false,
+    "allowBootstrap": false,
+    "allowTailwind": true,
+    "allowLucide": true,
+    "allowRadixUI": true
+  }
+}
