@@ -13,6 +13,7 @@ from ai_runtime.agent_adapter import AgentAdapter, AgentResult
 from ai_runtime.executor import ExecutionRunner
 from ai_runtime.fix_loop import AutoFixLoop, FixLoopConvergence
 from ai_runtime.patch_engine import PatchEngine
+from ai_runtime.capability_analyzer import CapabilityAnalyzer, DevelopmentPlan
 
 
 PROMPTS: dict[str, str] = {
@@ -22,6 +23,11 @@ PROMPTS: dict[str, str] = {
     "dev": "You are a senior Python dev. Implement the feature: type annotations, logging, exception handling, unified response {\"code\":0,\"data\":...,\"message\":\"\"}. Do NOT modify test files. Output Python code.",
     "review": "You are a strict code reviewer. Check: null safety, concurrency, injection, resource leaks, duplicates, circular deps, edge cases, missing tests, perf, SOLID. Output markdown with HIGH/MEDIUM/LOW per issue.",
     "docs": "You are a technical writer. Generate: README.md, API docs, deploy guide. Output markdown.",
+    # Frontend tasks
+    "ui-design": "You are a senior UI designer. Based on the prototype and requirements, design the frontend component tree: # Component Hierarchy # Page Layout # State Management # API Integration Points. Output markdown.",
+    "component-test": "You are a senior frontend test engineer. Generate frontend tests. Use Vitest + Testing Library. Test: rendering, user interaction, API mock, error states. Output TypeScript test code.",
+    "page-dev": "You are a senior React developer. Implement frontend pages based on the prototype. Use React + TypeScript + CSS. Every component must handle loading/empty/error states. Call real backend APIs. Output TypeScript/JSX code.",
+    "e2e-test": "You are a QA engineer. Generate Playwright E2E tests. Test: full user flow, API integration, error handling. Output TypeScript test code.",
 }
 
 
@@ -38,14 +44,20 @@ class AIRuntime:
         self.adapter = AgentAdapter(deepseek_api_key=deepseek_api_key)
         self.executor = ExecutionRunner(workspace)
         self.patcher = PatchEngine(workspace)
-        # Note: fix_loop needs PatchEngine for real code changes — wired in P1
         self.fix_loop = AutoFixLoop(self.adapter, self.executor)
         self.event_bus = EventBus()
+        self.analyzer = CapabilityAnalyzer()
+        self._plan: DevelopmentPlan | None = None
 
         for task in self.store.load_graph():
             self.graph.add(task)
 
-    def _make_tasks(self, feature: str) -> list[Task]:
+    def analyze(self, requirement_path: str, requirement_text: str) -> DevelopmentPlan:
+        """Analyze requirement and return development plan."""
+        self._plan = self.analyzer.analyze(requirement_path, requirement_text)
+        return self._plan
+
+    def _make_backend_tasks(self, feature: str) -> list[Task]:
         fid = feature.upper().replace("-", "_")
         return [
             Task(id=f"REQ-{fid}", type="requirement", module=feature, model="claude"),
@@ -56,9 +68,32 @@ class AIRuntime:
             Task(id=f"REVIEW-{fid}", type="review", depends_on=[f"VERIFY-{fid}"], model="claude"),
         ]
 
-    async def submit(self, feature: str) -> str:
-        for t in self._make_tasks(feature):
+    def _make_frontend_tasks(self, feature: str) -> list[Task]:
+        fid = feature.upper().replace("-", "_")
+        return [
+            Task(id=f"FE-UI-{fid}", type="ui-design", module=feature, model="claude",
+                 depends_on=[f"DESIGN-{fid}"]),
+            Task(id=f"FE-TEST-{fid}", type="component-test", module=feature, model="deepseek",
+                 depends_on=[f"FE-UI-{fid}"]),
+            Task(id=f"FE-DEV-{fid}", type="page-dev", module=feature, model="deepseek",
+                 depends_on=[f"FE-TEST-{fid}"]),
+            Task(id=f"FE-E2E-{fid}", type="e2e-test", module=feature, model="deepseek",
+                 depends_on=[f"FE-DEV-{fid}"]),
+            Task(id=f"FE-VERIFY-{fid}", type="verify", module=feature, model="deepseek",
+                 depends_on=[f"FE-E2E-{fid}"]),
+        ]
+
+    async def submit(self, feature: str, requirement_path: str = "", requirement_text: str = "") -> str:
+        # Analyze requirement type
+        plan = self.analyze(requirement_path, requirement_text)
+
+        # Build DAG(s)
+        backend_tasks = self._make_backend_tasks(feature) if plan.need_backend else []
+        frontend_tasks = self._make_frontend_tasks(feature) if plan.need_frontend else []
+
+        for t in backend_tasks + frontend_tasks:
             self.graph.add(t)
+        self.graph.validate()
         self.store.save_graph(self.graph.all_tasks())
         return feature
 
@@ -132,4 +167,23 @@ class AIRuntime:
             s = t.status.value
             counts[s] = counts.get(s, 0) + 1
         counts["total"] = len(tasks)
-        return counts
+
+        # Split frontend/backend
+        be_tasks = [t for t in tasks if not t.id.startswith("FE-")]
+        fe_tasks = [t for t in tasks if t.id.startswith("FE-")]
+        be_passed = sum(1 for t in be_tasks if t.status.value == "passed")
+        fe_passed = sum(1 for t in fe_tasks if t.status.value == "passed")
+
+        result = {"total": counts["total"], "by_status": counts}
+        if self._plan:
+            result["plan"] = {
+                "type": self._plan.project_type.value,
+                "need_frontend": self._plan.need_frontend,
+                "need_backend": self._plan.need_backend,
+                "reason": self._plan.reason,
+            }
+        if be_tasks:
+            result["backend"] = {"total": len(be_tasks), "passed": be_passed}
+        if fe_tasks:
+            result["frontend"] = {"total": len(fe_tasks), "passed": fe_passed}
+        return result
