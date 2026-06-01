@@ -17,7 +17,9 @@ def test_ready_tasks_empty_when_deps_not_satisfied():
     g = TaskGraph()
     g.add(Task(id="A", type="requirement"))  # still PENDING
     g.add(Task(id="B", type="design", depends_on=["A"]))
-    assert g.ready_tasks() == []
+    # A is a root task (no deps) so it IS ready even when PENDING
+    # B depends on A which is not PASSED, so B is NOT ready
+    assert {t.id for t in g.ready_tasks()} == {"A"}
 
 
 def test_invalidate_downstream_marks_stale():
@@ -145,14 +147,15 @@ def test_validate_passes_on_valid_dag():
 
 
 def test_graph_with_multiple_roots():
-    """Tasks with no dependencies are valid roots."""
+    """Tasks with no dependencies are valid roots and ready when PENDING."""
     g = TaskGraph()
     g.add(Task(id="A", type="requirement"))
     g.add(Task(id="B", type="requirement"))
     g.add(Task(id="C", type="codegen", depends_on=["A", "B"]))
     g.validate()
+    # A and B are root tasks (no deps, PENDING) so they ARE ready
     # C should be ready only when both A and B are PASSED
-    assert g.ready_tasks() == []  # A and B are PENDING, not PASSED
+    assert {t.id for t in g.ready_tasks()} == {"A", "B"}
     assert g.get("A").status == TaskStatus.PENDING
     assert g.get("B").status == TaskStatus.PENDING
 

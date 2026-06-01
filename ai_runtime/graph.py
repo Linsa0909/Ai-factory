@@ -73,12 +73,16 @@ class TaskGraph:
         return list(self._tasks.values())
 
     def ready_tasks(self) -> list[Task]:
-        """Return tasks where all deps are PASSED and status is PENDING."""
+        """Return tasks where all deps are PASSED and status is PENDING.
+
+        Tasks with no dependencies (root tasks) are always ready when PENDING.
+        """
         ready: list[Task] = []
         for task in self._tasks.values():
             if task.status != TaskStatus.PENDING:
                 continue
             if not task.depends_on:
+                ready.append(task)
                 continue
             if all(
                 self._tasks[dep_id].status == TaskStatus.PASSED
