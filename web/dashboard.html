@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentDevOS / Kernel Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0c0f;
+    --surface: #0f1318;
+    --border: #1a1f26;
+    --text: #b0c4d8;
+    --text-dim: #4a5568;
+    --text-bright: #e2e8f0;
+    --green: #22c55e;
+    --green-dim: #0f2918;
+    --amber: #f59e0b;
+    --amber-dim: #291d0a;
+    --red: #ef4444;
+    --red-dim: #290f0f;
+    --blue: #38bdf8;
+    --blue-dim: #0a1f2e;
+    --purple: #a78bfa;
+    --purple-dim: #170f2a;
+    --teal: #2dd4bf;
+    --glow-green: 0 0 18px rgba(34, 197, 94, 0.25);
+    --glow-amber: 0 0 18px rgba(245, 158, 11, 0.25);
+    --glow-red: 0 0 18px rgba(239, 68, 68, 0.25);
+    --font: 'JetBrains Mono', monospace;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.7;
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px
+    );
+  }
+
+  /* CRT vignette */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55) 100%);
+  }
+
+  .container {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 20px 24px 40px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header-brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .header-logo {
+    color: var(--green);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 0.02em;
+    text-shadow: var(--glow-green);
+  }
+  .header-vers {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 300;
+  }
+  .header-meta {
+    display: flex;
+    gap: 20px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .header-meta span { color: var(--text); font-weight: 500; }
+  .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .dot-live { background: var(--green); box-shadow: var(--glow-green); }
+  .dot-idle { background: var(--amber); box-shadow: var(--glow-amber); animation: none; }
+  .dot-dead { background: var(--red); box-shadow: var(--glow-red); animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Layout */
+  .grid { display: grid; grid-template-columns: 300px 1fr; gap: 24px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  /* Pipeline DAG */
+  .pipeline {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    position: relative;
+  }
+  .pipeline-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    font-weight: 500;
+  }
+  .dag {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .dag-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dag-row.fork {
+    gap: 40px;
+  }
+  .dag-node {
+    padding: 8px 14px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    text-align: center;
+    min-width: 100px;
+    position: relative;
+    border: 1px solid transparent;
+    transition: all 0.25s ease;
+    cursor: default;
+  }
+  .dag-node:hover {
+    transform: translateY(-1px);
+    z-index: 2;
+  }
+  .dag-node.pending  { background: transparent; border-color: var(--border); color: var(--text-dim); }
+  .dag-node.ready    { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+  .dag-node.running  { background: var(--amber-dim); border-color: var(--amber); color: var(--amber); animation: pulse-border 1.5s ease-in-out infinite; }
+  .dag-node.passed   { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+  .dag-node.failed   { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+  .dag-node.blocked  { background: var(--purple-dim); border-color: var(--purple); color: var(--purple); }
+
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: var(--glow-amber); }
+    50% { box-shadow: 0 0 4px rgba(245,158,11,0.1); }
+  }
+
+  .dag-connector {
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1;
+    user-select: none;
+  }
+  .dag-connector.fork {
+    display: flex;
+    gap: 40px;
+    justify-content: center;
+  }
+
+  /* Stats bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-bright);
+    letter-spacing: -0.02em;
+  }
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .stat-value.green { color: var(--green); }
+  .stat-value.amber { color: var(--amber); }
+  .stat-value.red   { color: var(--red); }
+
+  /* Task Table */
+  .task-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .panel-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .task-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .task-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .task-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(26,31,38,0.6);
+    font-size: 11px;
+  }
+  .task-table tr:hover td { background: rgba(255,255,255,0.015); }
+  .task-name { font-weight: 500; color: var(--text-bright); }
+  .task-desc { color: var(--text-dim); font-size: 10px; }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+  }
+  .status-badge.pending  { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+  .status-badge.ready    { background: var(--blue-dim); color: var(--blue); }
+  .status-badge.passed   { background: var(--green-dim); color: var(--green); }
+  .status-badge.running  { background: var(--amber-dim); color: var(--amber); }
+  .status-badge.failed   { background: var(--red-dim); color: var(--red); }
+  .status-badge.blocked  { background: var(--purple-dim); color: var(--purple); }
+
+  .progress-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--green);
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+
+  /* Gates */
+  .gate-section {
+    margin-top: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .gate-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .gate-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    transition: border-color 0.2s;
+  }
+  .gate-row:hover { border-color: #2a3340; }
+  .gate-info { display: flex; align-items: center; gap: 10px; }
+  .gate-name { font-weight: 500; color: var(--text-bright); }
+  .gate-desc { color: var(--text-dim); font-size: 10px; }
+  .gate-actions { display: flex; gap: 8px; }
+
+  .btn {
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    padding: 8px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
+    background: var(--surface);
+    color: var(--text);
+  }
+  .btn:hover { border-color: #2a3340; }
+  .btn-approve {
+    background: var(--green-dim);
+    color: var(--green);
+    border-color: rgba(34,197,94,0.3);
+  }
+  .btn-approve:hover {
+    background: rgba(34,197,94,0.18);
+    box-shadow: var(--glow-green);
+  }
+  .btn-reject {
+    background: var(--red-dim);
+    color: var(--red);
+    border-color: rgba(239,68,68,0.3);
+  }
+  .btn-reject:hover {
+    background: rgba(239,68,68,0.18);
+    box-shadow: var(--glow-red);
+  }
+  .btn-primary {
+    background: var(--blue-dim);
+    color: var(--blue);
+    border-color: rgba(56,189,248,0.3);
+  }
+  .btn-primary:hover {
+    background: rgba(56,189,248,0.18);
+  }
+
+  .btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 10000;
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-family: var(--font);
+    font-size: 11px;
+    max-width: 400px;
+    animation: slideIn 0.3s ease;
+    border: 1px solid;
+    display: none;
+  }
+  .toast.show { display: block; }
+  .toast.success { background: var(--green-dim); color: var(--green); border-color: rgba(34,197,94,0.4); }
+  .toast.error   { background: var(--red-dim); color: var(--red); border-color: rgba(239,68,68,0.4); }
+
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  .refreshing { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .refresh-counter { color: var(--text-dim); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-brand">
+      <span class="header-logo">AgentDevOS/</span>
+      <span class="header-vers">kernel 1.0.0</span>
+    </div>
+    <div class="header-meta">
+      <div><span class="dot dot-live"></span>WS <span id="ws-state">connecting</span></div>
+      <div>Tasks <span id="total-tasks">0</span></div>
+      <div>Uptime <span id="uptime">00:00</span></div>
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat"><div class="stat-value green" id="stat-passed">0</div><div class="stat-label">Passed</div></div>
+    <div class="stat"><div class="stat-value amber" id="stat-running">0</div><div class="stat-label">Running</div></div>
+    <div class="stat"><div class="stat-value red" id="stat-failed">0</div><div class="stat-label">Failed</div></div>
+    <div class="stat"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Total</div></div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="grid" style="margin-top:20px">
+
+    <!-- Pipeline DAG -->
+    <div class="pipeline">
+      <div class="pipeline-title">Pipeline DAG</div>
+      <div class="dag" id="dag">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+
+    <!-- Task Table -->
+    <div class="task-panel">
+      <div class="panel-title">
+        <span>Task Registry</span>
+        <span id="refresh-counter" class="refresh-counter"></span>
+      </div>
+      <table class="task-table">
+        <thead><tr><th>ID</th><th>Agent</th><th>Status</th></tr></thead>
+        <tbody id="task-tbody"></tbody>
+      </table>
+      <div style="margin-top:12px">
+        <div class="progress-bar"><div class="progress-fill" id="overall-progress" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gates -->
+  <div class="gate-section">
+    <div class="panel-title">Human Gate Controls</div>
+    <div class="gate-list" id="gate-list">
+      <!-- Rendered by JS -->
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div style="margin-top:20px; display:flex; gap:10px;">
+    <button class="btn btn-primary" onclick="runOnce()" id="btn-run"> Run Next Task</button>
+    <button class="btn" onclick="fetchStatus()"> Refresh Status</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/api';
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/live`;
+
+let ws = null;
+let uptimeStart = Date.now();
+let refreshCount = 0;
+
+// Agents definition (pipeline order)
+const AGENTS = [
+  { id: 'analyst', name: 'Analyst', desc: 'Requirement analysis' },
+  { id: 'architect', name: 'Architect', desc: 'Architecture design' },
+  { id: 'backend', name: 'Backend', desc: 'Backend implementation' },
+  { id: 'frontend', name: 'Frontend', desc: 'Frontend implementation' },
+  { id: 'tester', name: 'Tester', desc: 'Test execution' },
+  { id: 'verifier', name: 'Verifier', desc: 'Output verification' },
+  { id: 'recorder', name: 'Recorder', desc: 'Flow logging' },
+  { id: 'knowledge', name: 'Knowledge', desc: 'Knowledge extraction' },
+];
+
+const GATES = [
+  { id: 'gate1', name: 'Gate 1', desc: 'Require Design' },
+  { id: 'gate2', name: 'Gate 2', desc: 'Test Dev' },
+  { id: 'gate3', name: 'Gate 3', desc: 'Review Deploy' },
+];
+
+function statusClass(s) {
+  const map = { pending: 'pending', ready: 'ready', running: 'running', passed: 'passed',
+                failed: 'failed', human_required: 'blocked', blocked: 'blocked' };
+  return map[s] || 'pending';
+}
+
+function renderDAG(statuses) {
+  const dag = document.getElementById('dag');
+  const getStatus = (id) => (statuses && statuses[id]) ? statuses[id] : 'pending';
+  const node = (id, label) => {
+    const s = getStatus(id);
+    return `<span class="dag-node ${statusClass(s)}">${label}<br><small style="font-size:9px;opacity:0.7">${s}</small></span>`;
+  };
+
+  dag.innerHTML = `
+    <div class="dag-row">${node('analyst','Analyst')}</div>
+    <div class="dag-row"><span class="dag-connector">|</span></div>
+    <div class="dag-row">${node('architect','Architect')}</div>
+    <div class="dag-row"><span class="dag-connector fork"><span>/</span><span>\\</span></span></div>
+    <div class="dag-row fork">${node('backend','Backend')}${node('frontend','Frontend')}</div>
+    <div class="dag-row"><span class="dag-connector fork"><span>\\</span><span>/</span></span></div>
+    <div class="dag-row">${node('tester','Tester')}</div>
+    <div class="dag-row"><span class="dag-connector">|</span></div>
+    <div class="dag-row">${node('verifier','Verifier')}</div>
+    <div class="dag-row"><span class="dag-connector">|</span></div>
+    <div class="dag-row">${node('recorder','Recorder')}</div>
+    <div class="dag-row"><span class="dag-connector">|</span></div>
+    <div class="dag-row">${node('knowledge','Knowledge')}</div>
+  `;
+}
+
+function renderTaskTable(statuses) {
+  const tbody = document.getElementById('task-tbody');
+  const rows = AGENTS.map(a => {
+    const s = (statuses && statuses[a.id]) ? statuses[a.id] : 'pending';
+    return `<tr>
+      <td><span class="task-name">${a.id}</span></td>
+      <td><span class="task-name">${a.name}</span><br><span class="task-desc">${a.desc}</span></td>
+      <td><span class="status-badge ${statusClass(s)}">${s}</span></td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rows;
+
+  // Progress
+  const passed = Object.values(statuses || {}).filter(s => s === 'passed').length;
+  document.getElementById('overall-progress').style.width = `${(passed / AGENTS.length) * 100}%`;
+}
+
+function renderStats(statuses) {
+  const vals = Object.values(statuses || {});
+  document.getElementById('stat-passed').textContent = vals.filter(s => s === 'passed').length;
+  document.getElementById('stat-running').textContent = vals.filter(s => s === 'running').length;
+  document.getElementById('stat-failed').textContent = vals.filter(s => s === 'failed' || s === 'human_required').length;
+  document.getElementById('stat-total').textContent = AGENTS.length;
+  document.getElementById('total-tasks').textContent = AGENTS.length;
+}
+
+function renderGates(gates) {
+  const list = document.getElementById('gate-list');
+  const gateStatuses = gates || {};
+  list.innerHTML = GATES.map(g => {
+    const gs = gateStatuses[g.id] ? gateStatuses[g.id].status || 'unknown' : 'unknown';
+    const isPending = gs === 'pending';
+    return `<div class="gate-row">
+      <div class="gate-info">
+        <span class="gate-name">${g.name}</span>
+        <span class="gate-desc">${g.desc}</span>
+        <span class="status-badge ${isPending ? 'running' : (gs === 'approved' ? 'passed' : 'failed')}">${gs}</span>
+      </div>
+      <div class="gate-actions">
+        <button class="btn btn-approve" onclick="approveGate('${g.id}')" ${!isPending ? 'disabled' : ''}>Approve</button>
+        <button class="btn btn-reject" onclick="rejectGate('${g.id}')">Reject</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function updateUI(data) {
+  const byStatus = data.by_status || {};
+  const statuses = {};
+  AGENTS.forEach(a => {
+    // Map agent ID to status from orchestrator data
+    // The orchestrator returns counts by status, we map from task IDs
+    statuses[a.id] = 'pending'; // default
+  });
+
+  if (data.by_status) {
+    // Build per-task status from orchestrator if available
+    // In the orchestrator status endpoint, we get by_status counts
+    // The per-task status comes from the orchestrator's internal graph
+    // For now, render from the status endpoint which returns aggregated data
+    renderStats(byStatus);
+  }
+
+  renderDAG(statuses);
+  renderTaskTable(statuses);
+  renderGates(data.pending_gates ? data.pending_gates.map(g => ({[g]: {status: 'pending'}})).reduce((a,b) => ({...a,...b}), {}) : {});
+
+  refreshCount++;
+  document.getElementById('refresh-counter').textContent = `refresh #${refreshCount}`;
+}
+
+async function fetchStatus() {
+  try {
+    const resp = await fetch(`${API}/status`);
+    if (!resp.ok) throw new Error(resp.statusText);
+    const data = await resp.json();
+    updateUI(data);
+
+    // Also fetch agents for task-specific status
+    const agentsResp = await fetch(`${API}/agents`);
+    if (agentsResp.ok) {
+      const agents = await agentsResp.json();
+      // agents have id/name/description
+    }
+  } catch (e) {
+    showToast('Connection failed: ' + e.message, 'error');
+  }
+}
+
+async function runOnce() {
+  const btn = document.getElementById('btn-run');
+  btn.disabled = true;
+  btn.textContent = ' Running...';
+  try {
+    const resp = await fetch(`${API}/run`, { method: 'POST' });
+    const data = await resp.json();
+    updateUI(data.status || data);
+    showToast(`Task executed: ${data.result}`, data.result === 'done' ? 'success' : 'success');
+  } catch (e) {
+    showToast('Run failed: ' + e.message, 'error');
+  }
+  btn.disabled = false;
+  btn.textContent = ' Run Next Task';
+}
+
+async function approveGate(gateId) {
+  try {
+    const resp = await fetch(`${API}/gate/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gate_id: gateId, reviewer: 'operator' }),
+    });
+    const data = await resp.json();
+    showToast(`${gateId} approved`, 'success');
+    fetchStatus();
+  } catch (e) {
+    showToast('Gate approve failed', 'error');
+  }
+}
+
+async function rejectGate(gateId) {
+  const reason = prompt(`Reject reason for ${gateId}:`, 'Needs revision');
+  if (!reason) return;
+  try {
+    const resp = await fetch(`${API}/gate/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gate_id: gateId, reason, reviewer: 'operator' }),
+    });
+    showToast(`${gateId} rejected: ${reason}`, 'error');
+    fetchStatus();
+  } catch (e) {
+    showToast('Gate reject failed', 'error');
+  }
+}
+
+function showToast(msg, type) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.className = `toast show ${type}`;
+  setTimeout(() => { toast.className = 'toast'; }, 4000);
+}
+
+function connectWS() {
+  try {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      document.getElementById('ws-state').innerHTML = '<span class="dot dot-live"></span>live';
+    };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        updateUI(data);
+      } catch (e) {}
+    };
+    ws.onclose = () => {
+      document.getElementById('ws-state').innerHTML = '<span class="dot dot-idle"></span>reconnecting';
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => {
+      document.getElementById('ws-state').innerHTML = '<span class="dot dot-dead"></span>offline';
+    };
+  } catch (e) {
+    document.getElementById('ws-state').innerHTML = '<span class="dot dot-dead"></span>offline';
+  }
+}
+
+// Uptime counter
+setInterval(() => {
+  const elapsed = Math.floor((Date.now() - uptimeStart) / 1000);
+  const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+  const s = (elapsed % 60).toString().padStart(2, '0');
+  document.getElementById('uptime').textContent = `${m}:${s}`;
+}, 1000);
+
+// Initial load
+renderDAG({});
+renderTaskTable({});
+renderStats({});
+renderGates({});
+connectWS();
+fetchStatus();
+</script>
+</body>
+</html>

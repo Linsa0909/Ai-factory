@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  agentdevos:
+    build:
+      context: .
+      dockerfile: AgentDevOS/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - AGENTDEVOS_WORKSPACE=/workspace
+      - AGENTDEVOS_AGENTS_DIR=/app/AgentDevOS/agents
+    volumes:
+      - workspace_data:/workspace
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000
+
+volumes:
+  workspace_data:
