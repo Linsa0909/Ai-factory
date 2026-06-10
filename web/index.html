@@ -577,25 +577,19 @@ function renderGates(gates) {
 }
 
 function updateUI(data) {
-  const byStatus = data.by_status || {};
-  const statuses = {};
+  // Use per-task status from API (data.tasks maps agent_id -> status)
+  const statuses = data.tasks || {};
   AGENTS.forEach(a => {
-    // Map agent ID to status from orchestrator data
-    // The orchestrator returns counts by status, we map from task IDs
-    statuses[a.id] = 'pending'; // default
+    if (!statuses[a.id]) statuses[a.id] = 'pending';
   });
 
   if (data.by_status) {
-    // Build per-task status from orchestrator if available
-    // In the orchestrator status endpoint, we get by_status counts
-    // The per-task status comes from the orchestrator's internal graph
-    // For now, render from the status endpoint which returns aggregated data
-    renderStats(byStatus);
+    renderStats(data.by_status);
   }
 
   renderDAG(statuses);
   renderTaskTable(statuses);
-  renderGates(data.pending_gates ? data.pending_gates.map(g => ({[g]: {status: 'pending'}})).reduce((a,b) => ({...a,...b}), {}) : {});
+  renderGates(data.pending_gates || {});
 
   refreshCount++;
   document.getElementById('refresh-counter').textContent = `refresh #${refreshCount}`;

@@ -199,19 +199,22 @@ class Orchestrator:
     # ---- Status ----
 
     def status(self) -> dict:
-        """Return current pipeline status."""
+        """Return current pipeline status including per-task states."""
         if self.graph is None:
             return {"error": "No pipeline loaded — call load_agents() first"}
 
         tasks = self.graph.all_tasks()
         counts: dict[str, int] = {}
+        per_task: dict[str, str] = {}
         for t in tasks:
             s = t.status.value
             counts[s] = counts.get(s, 0) + 1
+            per_task[t.id] = s
 
         return {
             "total": len(tasks),
             "by_status": counts,
+            "tasks": per_task,
             "ready": len(self.graph.ready_tasks()),
             "done": self.scheduler.is_done() if self.scheduler else False,
             "blocked": self.scheduler.is_blocked() if self.scheduler else False,
