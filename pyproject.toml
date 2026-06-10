@@ -5,6 +5,8 @@ description = "AgentDevOS — Deterministic Multi-Agent OS Kernel"
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
 ]
 
 [project.optional-dependencies]
