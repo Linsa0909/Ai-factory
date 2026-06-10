@@ -16,7 +16,7 @@ description: 流程跟踪、审计日志、指标收集
 - write_file
 
 # INPUT
-- {issue_id}/**/*
+- {issue_id}/verify-report.md
 
 # OUTPUT
 - {issue_id}/flow-log.md

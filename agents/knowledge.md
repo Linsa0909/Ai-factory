@@ -16,7 +16,7 @@ description: 知识提取、模式总结、可复用沉淀
 - write_file
 
 # INPUT
-- {issue_id}/**/*
+- {issue_id}/flow-log.md
 
 # OUTPUT
 - {issue_id}/knowledge-summary.md
