@@ -280,8 +280,29 @@ class Orchestrator:
             return "running"
 
     def _get_prompt(self, spec: AgentSpec) -> str:
-        """Get or construct the prompt for an agent."""
-        return f"You are {spec.name}. {spec.description}\n\n{spec.capability}"
+        """Build system prompt from agent.md with code output format instructions."""
+        base = f"You are {spec.name}. {spec.description}\n\n{spec.capability}"
+
+        # For code-generation agents: enforce PatchEngine-compatible output format
+        if spec.agent_type in ("backend", "frontend", "tester", "verifier"):
+            base += """
+
+IMPORTANT: Output every file using this EXACT format:
+```LANG:path/to/file.ext
+...complete file content...
+```
+Do NOT output summaries. Output COMPLETE, RUNNABLE source files.
+For Python files, include ALL imports. For TSX files, include ALL components.
+
+Example:
+```python:backend/app/main.py
+from fastapi import FastAPI
+app = FastAPI()
+@app.get("/")
+def root(): return {"status": "ok"}
+```"""
+
+        return base
 
     def _read_artifacts(self, meta: TaskMeta) -> dict[str, str]:
         """Read upstream artifact contents for execution snapshot."""
