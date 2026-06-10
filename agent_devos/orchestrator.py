@@ -93,6 +93,12 @@ class Orchestrator:
             self.specs, self.registry, self.policy
         )
         self.scheduler = Scheduler(self.graph, self.metas)
+
+        # Transition root tasks (no dependencies) from PENDING to READY
+        for task in self.graph.all_tasks():
+            if not task.depends_on:
+                transition(task, TaskStatus.READY)
+
         return self.specs
 
     # ---- Execution ----

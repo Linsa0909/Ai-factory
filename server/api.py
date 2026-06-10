@@ -29,9 +29,15 @@ def get_orchestrator(workspace: str = ""):
     global _orchestrator
     if _orchestrator is None:
         from agent_devos.orchestrator import Orchestrator
+        import subprocess
         ws = workspace or os.getenv("AGENTDEVOS_WORKSPACE", "/tmp/agentdevos-workspace")
         agents_dir = os.getenv("AGENTDEVOS_AGENTS_DIR", "/mnt/c/Users/Linsa/AgentDevOS/agents")
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        # Ensure workspace exists and is a git repo (SnapshotManager requirement)
+        os.makedirs(ws, exist_ok=True)
+        r = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=ws, capture_output=True)
+        if r.returncode != 0:
+            subprocess.run(["git", "init"], cwd=ws, capture_output=True)
         _orchestrator = Orchestrator(
             workspace=ws,
             agents_dir=agents_dir,
