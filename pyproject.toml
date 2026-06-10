@@ -1,0 +1,18 @@
+[project]
+name = "agentdevos"
+version = "1.0.0"
+description = "AgentDevOS — Deterministic Multi-Agent OS Kernel"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
