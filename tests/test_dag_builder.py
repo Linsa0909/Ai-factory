@@ -50,7 +50,8 @@ def test_dag_builder_rejects_conflicting_producers():
 
 def test_dag_builder_rejects_dangling_inputs():
     specs = [
-        _make_spec("architect", ["nonexistent.md"], ["design.md"]),
+        _make_spec("analyst", [], ["analysis.md"]),
+        _make_spec("architect", ["analysis.md", "nonexistent.md"], ["design.md"]),
     ]
     registry = ArtifactRegistry()
     policy = GlobalPolicyEngine()

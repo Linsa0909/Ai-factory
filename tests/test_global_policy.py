@@ -29,7 +29,8 @@ def test_single_writer_violation_detected():
 def test_dangling_input_detected():
     policy = GlobalPolicyEngine()
     specs = [
-        _make_spec("architect", ["analysis.md", "nonexistent.md"], ["design.md"]),
+        _make_spec("analyst", [], ["analysis.md"]),                          # produces analysis.md
+        _make_spec("architect", ["analysis.md", "nonexistent.md"], ["design.md"]),  # nonexistent.md has no producer
     ]
     registry = ArtifactRegistry()
     violations = policy.validate_before_dag_build(specs, registry)

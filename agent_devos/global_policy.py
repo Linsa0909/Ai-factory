@@ -53,7 +53,9 @@ class GlobalPolicyEngine:
     def _check_no_dangling_inputs(
         self, specs: list[AgentSpec], registry: ArtifactRegistry
     ) -> list[str]:
-        """Every INPUT must have a producer (in specs or registry)."""
+        """Every INPUT must have a producer (in specs or registry).
+        Root agents (no inputs match any output) are skipped — their inputs
+        are user-provided artifacts (e.g., requirement.md, README.md)."""
         violations: list[str] = []
         all_outputs: set[str] = set()
         for spec in specs:
@@ -61,17 +63,28 @@ class GlobalPolicyEngine:
                 all_outputs.add(o)
 
         for spec in specs:
+            # If no inputs have any producer, this is a root agent —
+            # all its inputs are user-provided, skip dangling check.
+            has_any_producer = any(
+                inp in all_outputs or registry.lookup_producer(inp)
+                or self._glob_match_any(inp, all_outputs)
+                for inp in spec.inputs
+            )
+            if not has_any_producer and spec.inputs:
+                continue
+
+            # Flag individual inputs that have no producer.
             for input_path in spec.inputs:
                 if input_path in all_outputs:
                     continue
                 if registry.lookup_producer(input_path):
                     continue
-                matched = self._glob_match_any(input_path, all_outputs)
-                if not matched:
-                    violations.append(
-                        f"Dangling input: '{spec.id}' requires '{input_path}' "
-                        f"but no agent produces it"
-                    )
+                if self._glob_match_any(input_path, all_outputs):
+                    continue
+                violations.append(
+                    f"Dangling input: '{spec.id}' requires '{input_path}' "
+                    f"but no agent produces it"
+                )
         return violations
 
     def _check_no_semantic_overwrite(
