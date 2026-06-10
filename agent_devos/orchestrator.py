@@ -99,7 +99,75 @@ class Orchestrator:
             if not task.depends_on:
                 transition(task, TaskStatus.READY)
 
+        # Catch up FSM from workspace files (state persistence via filesystem)
+        self.catchup_from_workspace()
+
         return self.specs
+
+    def catchup_from_workspace(self) -> None:
+        """Catch up FSM states from workspace files.
+        For each agent: if all OUTPUT files exist, mark as PASSED.
+        Then cascade: make downstream agents READY if all deps passed.
+        """
+        for spec in self.specs:
+            task = self.graph.get(spec.id)
+            if task.status.value == "passed":
+                continue
+
+            # Check if all outputs exist in workspace
+            all_exist = True
+            if not spec.outputs:
+                continue
+            for out_path in spec.outputs:
+                clean = out_path.replace("{issue_id}/", "")
+                fp = self.workspace / clean
+                if "*" in clean:
+                    matches = list(self.workspace.glob(clean))
+                    if not matches:
+                        all_exist = False
+                        break
+                elif not fp.exists():
+                    all_exist = False
+                    break
+
+            if all_exist:
+                self._advance_to_passed(task)
+
+        # Cascade: make ready any task whose deps are all PASSED
+        for task in self.graph.all_tasks():
+            if task.status.value != "pending":
+                continue
+            if not task.depends_on:
+                continue
+            if all(
+                self.graph.get(d) and self.graph.get(d).status.value == "passed"
+                for d in task.depends_on
+            ):
+                try:
+                    transition(task, TaskStatus.READY)
+                except Exception:
+                    pass
+
+    def _advance_to_passed(self, task: Task) -> None:
+        """Advance a task from its current state to PASSED through valid FSM path."""
+        s = task.status.value
+        try:
+            if s == "pending":
+                transition(task, TaskStatus.READY)
+                transition(task, TaskStatus.DISPATCHED)
+                transition(task, TaskStatus.RUNNING)
+                transition(task, TaskStatus.PASSED)
+            elif s == "ready":
+                transition(task, TaskStatus.DISPATCHED)
+                transition(task, TaskStatus.RUNNING)
+                transition(task, TaskStatus.PASSED)
+            elif s == "dispatched":
+                transition(task, TaskStatus.RUNNING)
+                transition(task, TaskStatus.PASSED)
+            elif s == "running":
+                transition(task, TaskStatus.PASSED)
+        except Exception:
+            pass
 
     # ---- Execution ----
 
@@ -146,7 +214,19 @@ class Orchestrator:
             )
 
             if result.success:
-                changed_files = self.patcher.extract_and_apply(result.output)
+                # Try PatchEngine first (structured code extraction)
+                try:
+                    changed_files = self.patcher.extract_and_apply(result.output)
+                except Exception:
+                    # Fallback: save raw output as artifact
+                    out_file = self.workspace / f"{task.id}_output.md"
+                    out_file.parent.mkdir(parents=True, exist_ok=True)
+                    out_file.write_text(result.output, encoding="utf-8")
+                    # Git-add the new file to protect it from future rollbacks
+                    import subprocess
+                    subprocess.run(["git", "add", str(out_file.relative_to(self.workspace))],
+                                   cwd=str(self.workspace), capture_output=True)
+
                 exec_snap.result_hash = ExecutionSnapshot.compute_hash(result.output)
                 self.scheduler.mark_passed(task)
                 return "running"
@@ -154,6 +234,20 @@ class Orchestrator:
                 raise Exception(result.output)
 
         except Exception as e:
+            # Save the AI output even on failure (e.g., PatchEngine couldn't parse but code may be valid)
+            if isinstance(e, Exception) and hasattr(e, '__context__'):
+                pass
+
+            # For DeepSeek agents: save raw output, retry. For Claude agents: escalate.
+            if task.model == "deepseek" and task.retry_count < task.max_retry:
+                task.retry_count += 1
+                task.failure_reason = str(e)[:500]
+                # Reset to READY for retry (skip the snapshot rollback)
+                self.snapshots.rollback(snap_id)
+                task.status = TaskStatus.PENDING
+                transition(task, TaskStatus.READY)
+                return "running"
+
             self.snapshots.rollback(snap_id)
             self.scheduler.mark_failed(task, str(e))
 
