@@ -229,6 +229,22 @@ class Orchestrator:
 
                 exec_snap.result_hash = ExecutionSnapshot.compute_hash(result.output)
                 self.scheduler.mark_passed(task)
+
+                # Cascade: make downstream agents READY if all their deps passed
+                for t in self.graph.all_tasks():
+                    if t.status.value != "pending":
+                        continue
+                    if not t.depends_on:
+                        continue
+                    if all(
+                        self.graph.get(d) and self.graph.get(d).status.value == "passed"
+                        for d in t.depends_on
+                    ):
+                        try:
+                            transition(t, TaskStatus.READY)
+                        except Exception:
+                            pass
+
                 return "running"
             else:
                 raise Exception(result.output)
