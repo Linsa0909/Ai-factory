@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime, timezone
+import json
 
 # Import ai-runtime (read-only base)
 import sys
@@ -105,32 +106,24 @@ class Orchestrator:
         return self.specs
 
     def catchup_from_workspace(self) -> None:
-        """Catch up FSM states from workspace files.
-        For each agent: if all OUTPUT files exist, mark as PASSED.
-        Then cascade: make downstream agents READY if all deps passed.
+        """Catch up FSM states from .agentdevos/status.json.
+        Reads status records written by Orchestrator — does NOT parse agent outputs.
         """
-        for spec in self.specs:
-            task = self.graph.get(spec.id)
-            if task.status.value == "passed":
-                continue
+        status_path = self.workspace / ".agentdevos" / "status.json"
+        if not status_path.exists():
+            return
 
-            # Check if all outputs exist in workspace
-            all_exist = True
-            if not spec.outputs:
-                continue
-            for out_path in spec.outputs:
-                clean = out_path.replace("{issue_id}/", "")
-                fp = self.workspace / clean
-                if "*" in clean:
-                    matches = list(self.workspace.glob(clean))
-                    if not matches:
-                        all_exist = False
-                        break
-                elif not fp.exists():
-                    all_exist = False
-                    break
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
 
-            if all_exist:
+        agents_status = data.get("agents", {})
+        for agent_id, record in agents_status.items():
+            task = self.graph.get(agent_id) if self.graph else None
+            if task is None:
+                continue
+            if record.get("status") == "completed":
                 self._advance_to_passed(task)
 
         # Cascade: make ready any task whose deps are all PASSED
@@ -147,6 +140,50 @@ class Orchestrator:
                     transition(task, TaskStatus.READY)
                 except Exception:
                     pass
+
+    def _verify_outputs(self, spec: AgentSpec) -> tuple[bool, list[str]]:
+        """Verify agent outputs exist. Returns (all_exist, [missing_paths])."""
+        missing = []
+        for out_path in spec.outputs:
+            clean = out_path.replace("{issue_id}/", "")
+            fp = self.workspace / clean
+            if "*" in clean:
+                matches = list(self.workspace.glob(clean))
+                if not matches:
+                    missing.append(clean)
+            elif not fp.exists():
+                missing.append(clean)
+        return len(missing) == 0, missing
+
+    def _write_status(self, agent_id: str, status: str, outputs: list[str],
+                      error: str = "", retry_count: int = 0) -> None:
+        """Write agent status record to .agentdevos/status.json.
+        Agent produces content; Orchestrator verifies and records.
+        """
+        status_dir = self.workspace / ".agentdevos"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        status_path = status_dir / "status.json"
+
+        data = {}
+        if status_path.exists():
+            try:
+                data = json.loads(status_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        data.setdefault("agents", {})
+        data["agents"][agent_id] = {
+            "agent": agent_id,
+            "status": status,
+            "outputs": outputs,
+            "error": error,
+            "retry_count": retry_count,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        data.setdefault("pipeline", {})
+        data["pipeline"]["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+        status_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _advance_to_passed(self, task: Task) -> None:
         """Advance a task from its current state to PASSED through valid FSM path."""
@@ -214,23 +251,37 @@ class Orchestrator:
             )
 
             if result.success:
-                # Try PatchEngine first (structured code extraction)
+                # Step 1: Agent produces — extract code or save raw output
+                produced_files: list[str] = []
                 try:
-                    changed_files = self.patcher.extract_and_apply(result.output)
+                    produced_files = self.patcher.extract_and_apply(result.output)
                 except Exception:
-                    # Fallback: save raw output as artifact
                     out_file = self.workspace / f"{task.id}_output.md"
                     out_file.parent.mkdir(parents=True, exist_ok=True)
                     out_file.write_text(result.output, encoding="utf-8")
-                    # Git-add the new file to protect it from future rollbacks
+                    produced_files = [str(out_file.relative_to(self.workspace))]
                     import subprocess
                     subprocess.run(["git", "add", str(out_file.relative_to(self.workspace))],
                                    cwd=str(self.workspace), capture_output=True)
 
+                # Step 2: Orchestrator verifies
+                all_exist, missing = self._verify_outputs(spec)
+                if not all_exist:
+                    # Some outputs still missing — agent must retry
+                    raise Exception(f"Output verification failed. Missing: {missing}")
+
+                # Step 3: Orchestrator records
+                self._write_status(
+                    agent_id=task.id,
+                    status="completed",
+                    outputs=produced_files or spec.outputs,
+                    retry_count=task.retry_count,
+                )
+
                 exec_snap.result_hash = ExecutionSnapshot.compute_hash(result.output)
                 self.scheduler.mark_passed(task)
 
-                # Cascade: make downstream agents READY if all their deps passed
+                # Step 4: Route — cascade downstream
                 for t in self.graph.all_tasks():
                     if t.status.value != "pending":
                         continue
@@ -247,6 +298,8 @@ class Orchestrator:
 
                 return "running"
             else:
+                self._write_status(task.id, "failed", [], error=result.output,
+                                   retry_count=task.retry_count)
                 raise Exception(result.output)
 
         except Exception as e:
@@ -254,18 +307,22 @@ class Orchestrator:
             if isinstance(e, Exception) and hasattr(e, '__context__'):
                 pass
 
-            # For DeepSeek agents: save raw output, retry. For Claude agents: escalate.
+            # For DeepSeek agents: retry up to 3x. For Claude agents: escalate.
             if task.model == "deepseek" and task.retry_count < task.max_retry:
                 task.retry_count += 1
                 task.failure_reason = str(e)[:500]
-                # Reset to READY for retry (skip the snapshot rollback)
+                self._write_status(task.id, "failed", [], error=str(e)[:500],
+                                   retry_count=task.retry_count)
                 self.snapshots.rollback(snap_id)
                 task.status = TaskStatus.PENDING
                 transition(task, TaskStatus.READY)
                 return "running"
 
+            # Max retries exceeded — escalate to human
             self.snapshots.rollback(snap_id)
             self.scheduler.mark_failed(task, str(e))
+            self._write_status(task.id, "human_required", [], error=str(e)[:500],
+                               retry_count=task.retry_count)
 
             recovery_result = await self.recovery.handle_failure(
                 task,
